@@ -105,6 +105,14 @@ void PsyX_Pad_OpenController(Sint32 deviceId, int slot)
 		// assign device id automatically
 		if (controller->deviceId == -1)
 			controller->deviceId = deviceId;
+
+		// a real controller just attached: default it to ANALOG mode ON
+		// (0x73). InitPad's deviceId check only sees ini-mapped slots, so
+		// the attach event is the reliable signal for plug-and-play; the
+		// wasConnected check in InitPad preserves this choice on every
+		// subsequent re-init.
+		if (controller->padData)
+			((LPPADRAW)controller->padData)->id = 0x73;
 	}
 }
 
@@ -132,7 +140,14 @@ void PsyX_Pad_InitPad(int slot, u_char* padData)
 		bool wasConnected = (pad->id == 0x41 || pad->id == 0x73);
 
 		if(!wasConnected)
-			pad->id = slot == 0 ? 0x41 : 0xFF;	// since keyboard is a main controller - it's always on
+		{
+			// default: a real game controller gets ANALOG mode ON (0x73) so
+			// analog steering etc. work out of the box; the keyboard slot
+			// (deviceId -1) stays digital (0x41) since it has no analog
+			// channels, and unused slots keep 0xFF. The player can still
+			// toggle with Select+Start.
+			pad->id = (controller->deviceId >= 0) ? 0x73 : (slot == 0 ? 0x41 : 0xFF);
+		}
 
 		// only reset buttons
 		pad->buttons[0] = 0xFF;

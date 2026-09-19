@@ -1399,6 +1399,89 @@ void GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height
 #endif
 }
 
+// JERICHO: a second window that shows the live VRAM, refreshed every frame (see
+// GR_ShowVRAMDebug). Handy while chasing where an imported page or a car CLUT
+// actually lands. The VRAM image is the same 1024x512 the emulator keeps; the
+// software renderer is used on purpose so this never steals the main window's
+// OpenGL context.
+static SDL_Window* vram_debug_window = NULL;
+static SDL_Renderer* vram_debug_renderer = NULL;
+static SDL_Texture* vram_debug_texture = NULL;
+static unsigned int* vram_debug_pixels = NULL;
+static int vram_debug_failed = 0;
+
+// Returns 1 once the window is up, 0 if it could not be created (logged once).
+int GR_ShowVRAMDebug()
+{
+	if (vram_debug_failed)
+		return 0;
+
+	if (vram_debug_window == NULL)
+	{
+		vram_debug_window = SDL_CreateWindow("JERICHO VRAM (live)",
+			SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+			VRAM_WIDTH / 2, VRAM_HEIGHT / 2, SDL_WINDOW_RESIZABLE);
+
+		if (vram_debug_window == NULL)
+		{
+			eprinterr("vramview: SDL_CreateWindow failed: %s\n", SDL_GetError());
+			vram_debug_failed = 1;
+			return 0;
+		}
+
+		vram_debug_renderer = SDL_CreateRenderer(vram_debug_window, -1, SDL_RENDERER_SOFTWARE);
+
+		if (vram_debug_renderer == NULL)
+		{
+			eprinterr("vramview: SDL_CreateRenderer failed: %s\n", SDL_GetError());
+			vram_debug_failed = 1;
+			return 0;
+		}
+
+		vram_debug_texture = SDL_CreateTexture(vram_debug_renderer, SDL_PIXELFORMAT_ARGB8888,
+			SDL_TEXTUREACCESS_STREAMING, VRAM_WIDTH, VRAM_HEIGHT);
+
+		vram_debug_pixels = (unsigned int*)malloc(VRAM_WIDTH * VRAM_HEIGHT * sizeof(unsigned int));
+
+		if (vram_debug_texture == NULL || vram_debug_pixels == NULL)
+		{
+			eprinterr("vramview: SDL_CreateTexture failed: %s\n", SDL_GetError());
+			vram_debug_failed = 1;
+			return 0;
+		}
+	}
+
+	// PSX VRAM word: R at bit 0..4, G 5..9, B 10..14 (see GR_CopyRGBAFramebufferToVRAM).
+	for (int i = 0; i < VRAM_WIDTH * VRAM_HEIGHT; i++)
+	{
+		unsigned short v = vram[i];
+		unsigned int r = (v & 0x1f) << 3;
+		unsigned int g = ((v >> 5) & 0x1f) << 3;
+		unsigned int b = ((v >> 10) & 0x1f) << 3;
+
+		vram_debug_pixels[i] = 0xff000000u | (r << 16) | (g << 8) | b;
+	}
+
+	SDL_UpdateTexture(vram_debug_texture, NULL, vram_debug_pixels, VRAM_WIDTH * sizeof(unsigned int));
+
+	int outW = VRAM_WIDTH, outH = VRAM_HEIGHT;
+	SDL_GetRendererOutputSize(vram_debug_renderer, &outW, &outH);
+
+	float scaleX = (float)outW / VRAM_WIDTH;
+	float scaleY = (float)outH / VRAM_HEIGHT;
+	float scale = (scaleX < scaleY) ? scaleX : scaleY;
+	int dstW = (int)(VRAM_WIDTH * scale);
+	int dstH = (int)(VRAM_HEIGHT * scale);
+	SDL_Rect dst = { (outW - dstW) / 2, (outH - dstH) / 2, dstW, dstH };
+
+	SDL_SetRenderDrawColor(vram_debug_renderer, 0, 0, 0, 255);
+	SDL_RenderClear(vram_debug_renderer);
+	SDL_RenderCopy(vram_debug_renderer, vram_debug_texture, NULL, &dst);
+	SDL_RenderPresent(vram_debug_renderer);
+
+	return 1;
+}
+
 void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int update_vram, int flip_y)
 {
 	assert(x >= 0);

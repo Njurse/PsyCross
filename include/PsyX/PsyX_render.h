@@ -181,6 +181,9 @@ extern void			GR_SwapWindow();
 
 // PSX VRAM operations
 extern void			GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height, int bReadFromFrameBuffer);
+// JERICHO: show the live VRAM in a second window; refreshed each call. Returns 1
+// once the window is up, 0 if it could not be created.
+extern int			GR_ShowVRAMDebug();
 extern void			GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int dst_y);
 extern void			GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h);
 

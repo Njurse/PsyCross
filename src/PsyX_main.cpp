@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include <stdio.h>
+#include <stdlib.h>		// JERICHO: getenv, for the JERICHO_LOG_FLUSH lever below
 #include <SDL.h>
 
 #include "PsyX/PsyX_render.h"
@@ -401,6 +402,36 @@ void PsyX_Log_Flush()
 		fflush(g_logStream);
 }
 
+// JERICHO: should every log line be flushed as it is written?
+//
+// The log is a buffered FILE* (see PsyX_Log_Initialise) and the only fflush is
+// the one in PsyX_BeginScene, which the engine calls from exactly TWO places --
+// SetPleaseWait (E3stuff.c) and the same loading screen in loadsave.c -- i.e. when
+// a loading screen goes up, NOT per frame. During play the file on disk is
+// therefore whatever was last flushed, and a line written just before the game
+// hangs inside a hook never reaches the file at all. That silence is
+// indistinguishable from "that code never ran", and it cost a session: an
+// unflushed eject line was read as "the eject lever never fired".
+//
+// JERICHO_LOG_FLUSH=1 flushes per line, so a live reader sees the truth. Opt-in
+// on purpose: it is a write per line, and normal play gains nothing from it.
+// This is a lever for the harnesses under JERICHO/MODS/*/tools.
+//
+// Cached because PrintMessageToOutput is hot and getenv is not free.
+int PsyX_Log_FlushWanted()
+{
+	static int wanted = -1;
+
+	if (wanted < 0)
+	{
+		const char* v = getenv("JERICHO_LOG_FLUSH");
+
+		wanted = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+	}
+
+	return wanted;
+}
+
 // spew types
 typedef enum
 {
@@ -547,7 +578,13 @@ void PrintMessageToOutput(SpewType_t spewtype, char const* pMsgFormat, va_list a
 #endif
 
 	if(g_logStream)
+	{
 		fprintf(g_logStream, pTempBuffer);
+
+		// JERICHO: keep a live reader in step -- see PsyX_Log_FlushWanted above
+		if (PsyX_Log_FlushWanted())
+			fflush(g_logStream);
+	}
 }
 
 void PsyX_Log(const char* fmt, ...)

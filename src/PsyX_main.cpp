@@ -892,6 +892,30 @@ void PsyX_TakeScreenshot()
 	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);	// FIXME: is that correct format?
 #endif
 
+	// JERICHO: right the image before saving. glReadPixels() hands back rows
+	// bottom-to-top while SDL_SaveBMP writes them top-to-bottom, so the file used to
+	// come out upside down -- every screenshot-based check read the image inverted (a
+	// quad the log put in the lower half of the screen appeared at the top). A negative
+	// pitch would say it in one line, but SDL_SaveBMP faults on a bottom-up surface, so
+	// the rows are swapped in place instead.
+	{
+		const int stride = g_windowWidth * 4;
+		u_char* tmprow = (u_char*)malloc(stride);
+		int y;
+
+		for (y = 0; y < g_windowHeight / 2; y++)
+		{
+			u_char* a = pixels + (size_t)y * stride;
+			u_char* b = pixels + (size_t)(g_windowHeight - 1 - y) * stride;
+
+			memcpy(tmprow, a, stride);
+			memcpy(a, b, stride);
+			memcpy(b, tmprow, stride);
+		}
+
+		free(tmprow);
+	}
+
 	SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(pixels, g_windowWidth, g_windowHeight, 8 * 4, g_windowWidth * 4, 0, 0, 0, 0);
 
 	SDL_SaveBMP(surface, "SCREENSHOT.BMP");

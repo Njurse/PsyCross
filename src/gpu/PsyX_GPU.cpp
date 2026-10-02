@@ -1445,7 +1445,12 @@ static int ProcessDrawEnv(P_TAG* polyTag)
 		case 0x1:
 		{
 			// DR_TPAGE
-			activeDrawEnv.tpage = (code & 0x1FF);
+			// JERICHO: 0x9FF, not 0x1FF. _get_mode() (libgpu.h) ENCODES the page as
+			// 'tpage & 0x9ff' - bit 11 is the page-Y bit 9, which is how a page in the
+			// bottom half (rows 512..1023) is named. Masking it off here threw that bit
+			// away, so anything drawn from the draw-mode page rather than its own poly
+			// tpage (a rect, e.g.) could never reach the arena.
+			activeDrawEnv.tpage = (code & 0x9FF);
 			activeDrawEnv.dtd = (code >> 9) & 1;
 			activeDrawEnv.dfe = (code >> 10) & 1;
 			break;

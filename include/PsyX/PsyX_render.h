@@ -110,8 +110,22 @@
 #define LUT_WIDTH 		(256)
 #define LUT_HEIGHT		(256)
 
+// JERICHO: VRAM is widened from the PSX's 1024x512 to 1024x1024 (2 MiB of
+// texels). The stock game only ever addresses rows 0..511 -- the display buffers
+// live at (0,0) and (0,256), the page-slot walk (tpagepos[]) uses Y in {0,256},
+// and the sky/font sit in the top half -- so rows 512..1023 are a JERICHO-owned
+// arena no base-game path touches. See carhacks/docs/VRAM.md.
 #define VRAM_WIDTH		(1024)
-#define VRAM_HEIGHT		(512)
+#define VRAM_HEIGHT		(1024)
+
+// The stock half. Everything the base game places lives in rows 0..VRAM_STOCK_HEIGHT-1;
+// JERICHO's arena is rows VRAM_STOCK_HEIGHT..VRAM_HEIGHT-1.
+#define VRAM_STOCK_HEIGHT	(512)
+
+// VRAM_HEIGHT as a GLSL float literal for the shader source below. Keep in sync
+// with VRAM_HEIGHT -- the shader cannot stringify the parenthesised C macro into
+// a valid float, so this mirrors it.
+#define VRAM_HEIGHT_GLSL	"1024.0"
 
 #define TPAGE_WIDTH		(256)
 #define TPAGE_HEIGHT	(256)
@@ -181,9 +195,10 @@ extern void			GR_SwapWindow();
 
 // PSX VRAM operations
 extern void			GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height, int bReadFromFrameBuffer);
-// JERICHO: show the live VRAM in a second window; refreshed each call. Returns 1
-// once the window is up, 0 if it could not be created.
-extern int			GR_ShowVRAMDebug();
+// JERICHO: show the live VRAM in a second window; refreshed each call. scale is an
+// integer zoom and (rx,ry,rw,rh) the VRAM region to show (rw/rh <= 0 = full buffer).
+// Returns 1 once the window is up, 0 if it could not be created.
+extern int			GR_ShowVRAMDebug(int scale, int rx, int ry, int rw, int rh);
 extern void			GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int dst_y);
 extern void			GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h);
 

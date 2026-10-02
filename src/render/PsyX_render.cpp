@@ -545,13 +545,13 @@ GLint u_texelSizeLoc;
 #if (VRAM_FORMAT == GL_LUMINANCE_ALPHA)
 
 #define GPU_FETCH_VRAM_FUNC \
-		"	const vec2 c_VRAMTexel = vec2(1.0 / 1024.0, 1.0 / 512.0);\n"\
+		"	const vec2 c_VRAMTexel = vec2(1.0 / 1024.0, 1.0 / " VRAM_HEIGHT_GLSL ");\n"\
 		"	uniform sampler2D s_texture;\n"\
 		"	vec2 VRAM(vec2 uv) { return texture2D(s_texture, uv).ra; }\n"
 #else
 
 #define GPU_FETCH_VRAM_FUNC \
-		"	const vec2 c_VRAMTexel = vec2(1.0 / 1024.0, 1.0 / 512.0);\n"\
+		"	const vec2 c_VRAMTexel = vec2(1.0 / 1024.0, 1.0 / " VRAM_HEIGHT_GLSL ");\n"\
 		"	uniform sampler2D s_texture;\n"\
 		"	vec2 VRAM(vec2 uv) { return texture2D(s_texture, uv).rg; }\n"
 #endif
@@ -669,10 +669,16 @@ const char* gpu_shader_32_rgba =
 	"		v_texcoord.xy += a_extra.xy * 0.5;\n"\
 	"		v_color = a_color;\n"\
 	"		v_color.xyz *= a_texcoord.z;\n"\
+	"		// PSX tpage: low 4 bits = X page (x64), bit4 = Y bit8 (256), bits5-6 = ABR,\n"\
+	"		// bits7-8 = format, bit9 = dither, bit11 = Y bit9 (512). Mask out the\n"\
+	"		// non-address bits instead of leaning on the old 512-row wrap, which no\n"\
+	"		// longer folds exactly once VRAM is 1024 rows tall.\n"\
 	"		v_page_clut.x = fract(a_position.z / 16.0) * 1024.0;\n"\
-	"		v_page_clut.y = floor(a_position.z / 16.0) * 256.0;\n"\
+	"		v_page_clut.y = mod(floor(a_position.z / 16.0), 2.0) * 256.0 + mod(floor(a_position.z / 2048.0), 2.0) * 512.0;\n"\
+	"		// clut: y in bits 6+, x/16 in bits 0-5. Mod into range because the clut\n"\
+	"		// word is carried as a signed short, so a row >= 512 reads back negative.\n"\
 	"		v_page_clut.z = fract(a_position.w / 64.0);\n"\
-	"		v_page_clut.w = floor(a_position.w / 64.0) / 512.0;\n"\
+	"		v_page_clut.w = mod(floor(a_position.w / 64.0) / " VRAM_HEIGHT_GLSL ", 1.0);\n"\
 	"		v_page_clut.xy += c_UVFudge;\n"\
 	"		v_page_clut.zw += c_UVFudge;\n"\
 	GTE_PERSPECTIVE_CORRECTION\
@@ -1401,7 +1407,7 @@ void GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height
 
 // JERICHO: a second window that shows the live VRAM, refreshed every frame (see
 // GR_ShowVRAMDebug). Handy while chasing where an imported page or a car CLUT
-// actually lands. The VRAM image is the same 1024x512 the emulator keeps; the
+// actually lands. The VRAM image is the same 1024x1024 the emulator keeps; the
 // software renderer is used on purpose so this never steals the main window's
 // OpenGL context.
 static SDL_Window* vram_debug_window = NULL;
@@ -1409,18 +1415,77 @@ static SDL_Renderer* vram_debug_renderer = NULL;
 static SDL_Texture* vram_debug_texture = NULL;
 static unsigned int* vram_debug_pixels = NULL;
 static int vram_debug_failed = 0;
+// Cached region + zoom, so a changed request resizes instead of leaking.
+static int vram_debug_rx = 0, vram_debug_ry = 0, vram_debug_rw = 0, vram_debug_rh = 0, vram_debug_scale = 0;
 
 // Returns 1 once the window is up, 0 if it could not be created (logged once).
-int GR_ShowVRAMDebug()
+// scale = integer zoom; (rx,ry,rw,rh) = the VRAM region to show (rw/rh <= 0 = the
+// whole buffer). scale <= 0 means "fit the region into VRAM_VIEW_DEFAULT". The
+// window is kept to a sane size - a 1024x1024 VRAM at 1x is a full-screen window
+// otherwise - and the region is stretched to fill it.
+#define VRAM_VIEW_DEFAULT	512
+#define VRAM_VIEW_MAX		900
+
+int GR_ShowVRAMDebug(int scale, int rx, int ry, int rw, int rh)
 {
 	if (vram_debug_failed)
 		return 0;
+
+	// Clamp the request into the buffer.
+	if (rw <= 0 || rh <= 0)
+	{
+		rx = 0;
+		ry = 0;
+		rw = VRAM_WIDTH;
+		rh = VRAM_HEIGHT;
+	}
+
+	if (rx < 0) rx = 0;
+	if (ry < 0) ry = 0;
+	if (rx + rw > VRAM_WIDTH)  rw = VRAM_WIDTH - rx;
+	if (ry + rh > VRAM_HEIGHT) rh = VRAM_HEIGHT - ry;
+
+	if (rw <= 0 || rh <= 0)
+	{
+		rx = 0; ry = 0; rw = VRAM_WIDTH; rh = VRAM_HEIGHT;
+	}
+
+	int winW, winH, big;
+
+	if (scale <= 0)
+	{
+		// auto: fit the region into the default box, preserving aspect
+		winW = rw;
+		winH = rh;
+		big = (winW > winH) ? winW : winH;
+
+		if (big > VRAM_VIEW_DEFAULT)
+		{
+			winW = winW * VRAM_VIEW_DEFAULT / big;
+			winH = winH * VRAM_VIEW_DEFAULT / big;
+		}
+	}
+	else
+	{
+		winW = rw * scale;
+		winH = rh * scale;
+		big = (winW > winH) ? winW : winH;
+
+		if (big > VRAM_VIEW_MAX)
+		{
+			winW = winW * VRAM_VIEW_MAX / big;
+			winH = winH * VRAM_VIEW_MAX / big;
+		}
+	}
+
+	if (winW < 64) winW = 64;
+	if (winH < 64) winH = 64;
 
 	if (vram_debug_window == NULL)
 	{
 		vram_debug_window = SDL_CreateWindow("JERICHO VRAM (live)",
 			SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-			VRAM_WIDTH / 2, VRAM_HEIGHT / 2, SDL_WINDOW_RESIZABLE);
+			winW, winH, SDL_WINDOW_RESIZABLE);
 
 		if (vram_debug_window == NULL)
 		{
@@ -1439,9 +1504,9 @@ int GR_ShowVRAMDebug()
 		}
 
 		vram_debug_texture = SDL_CreateTexture(vram_debug_renderer, SDL_PIXELFORMAT_ARGB8888,
-			SDL_TEXTUREACCESS_STREAMING, VRAM_WIDTH, VRAM_HEIGHT);
+			SDL_TEXTUREACCESS_STREAMING, rw, rh);
 
-		vram_debug_pixels = (unsigned int*)malloc(VRAM_WIDTH * VRAM_HEIGHT * sizeof(unsigned int));
+		vram_debug_pixels = (unsigned int*)malloc(rw * rh * sizeof(unsigned int));
 
 		if (vram_debug_texture == NULL || vram_debug_pixels == NULL)
 		{
@@ -1449,30 +1514,60 @@ int GR_ShowVRAMDebug()
 			vram_debug_failed = 1;
 			return 0;
 		}
+
+		vram_debug_rx = rx; vram_debug_ry = ry;
+		vram_debug_rw = rw; vram_debug_rh = rh;
+		vram_debug_scale = scale;
+	}
+	else if (rx != vram_debug_rx || ry != vram_debug_ry ||
+		rw != vram_debug_rw || rh != vram_debug_rh || scale != vram_debug_scale)
+	{
+		// Region or zoom changed since the window was made: rebuild the backing
+		// texture and resize the window to match.
+		SDL_DestroyTexture(vram_debug_texture);
+		free(vram_debug_pixels);
+
+		vram_debug_texture = SDL_CreateTexture(vram_debug_renderer, SDL_PIXELFORMAT_ARGB8888,
+			SDL_TEXTUREACCESS_STREAMING, rw, rh);
+		vram_debug_pixels = (unsigned int*)malloc(rw * rh * sizeof(unsigned int));
+
+		if (vram_debug_texture == NULL || vram_debug_pixels == NULL)
+		{
+			eprinterr("vramview: SDL_CreateTexture failed: %s\n", SDL_GetError());
+			vram_debug_failed = 1;
+			return 0;
+		}
+
+		SDL_SetWindowSize(vram_debug_window, winW, winH);
+
+		vram_debug_rx = rx; vram_debug_ry = ry;
+		vram_debug_rw = rw; vram_debug_rh = rh;
+		vram_debug_scale = scale;
 	}
 
 	// PSX VRAM word: R at bit 0..4, G 5..9, B 10..14 (see GR_CopyRGBAFramebufferToVRAM).
-	for (int i = 0; i < VRAM_WIDTH * VRAM_HEIGHT; i++)
+	for (int yy = 0; yy < rh; yy++)
 	{
-		unsigned short v = vram[i];
-		unsigned int r = (v & 0x1f) << 3;
-		unsigned int g = ((v >> 5) & 0x1f) << 3;
-		unsigned int b = ((v >> 10) & 0x1f) << 3;
+		const unsigned short* row = vram + (ry + yy) * VRAM_WIDTH + rx;
+		unsigned int* out = vram_debug_pixels + yy * rw;
 
-		vram_debug_pixels[i] = 0xff000000u | (r << 16) | (g << 8) | b;
+		for (int xx = 0; xx < rw; xx++)
+		{
+			unsigned short v = row[xx];
+			unsigned int r = (v & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x1f) << 3;
+			unsigned int b = ((v >> 10) & 0x1f) << 3;
+
+			out[xx] = 0xff000000u | (r << 16) | (g << 8) | b;
+		}
 	}
 
-	SDL_UpdateTexture(vram_debug_texture, NULL, vram_debug_pixels, VRAM_WIDTH * sizeof(unsigned int));
+	SDL_UpdateTexture(vram_debug_texture, NULL, vram_debug_pixels, rw * sizeof(unsigned int));
 
-	int outW = VRAM_WIDTH, outH = VRAM_HEIGHT;
+	// Stretch the region to fill the window.
+	int outW = 0, outH = 0;
 	SDL_GetRendererOutputSize(vram_debug_renderer, &outW, &outH);
-
-	float scaleX = (float)outW / VRAM_WIDTH;
-	float scaleY = (float)outH / VRAM_HEIGHT;
-	float scale = (scaleX < scaleY) ? scaleX : scaleY;
-	int dstW = (int)(VRAM_WIDTH * scale);
-	int dstH = (int)(VRAM_HEIGHT * scale);
-	SDL_Rect dst = { (outW - dstW) / 2, (outH - dstH) / 2, dstW, dstH };
+	SDL_Rect dst = { 0, 0, outW, outH };
 
 	SDL_SetRenderDrawColor(vram_debug_renderer, 0, 0, 0, 255);
 	SDL_RenderClear(vram_debug_renderer);
@@ -1487,7 +1582,7 @@ void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int up
 	assert(x >= 0);
 	assert(y >= 0);
 	assert(x + w <= VRAM_WIDTH);
-	assert(y + h <= VRAM_WIDTH);
+	assert(y + h <= VRAM_HEIGHT);
 
 	ushort* fb = (ushort*)malloc(w * h * sizeof(ushort));
 	uint* data_src = (uint*)src;

@@ -762,19 +762,26 @@ void PsyX_Sys_DoPollEvent()
 				{
 					g_altKeyState = (event.type == SDL_KEYDOWN);
 				}
-				else if (nKey == SDL_SCANCODE_RETURN)
+				else if (nKey == SDL_SCANCODE_RETURN && g_altKeyState && event.type == SDL_KEYDOWN)
 				{
-					if (g_altKeyState && event.type == SDL_KEYDOWN)
-					{
-						int fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN > 0;
+					// Alt+Enter toggles the fullscreen mode. Consumed here so the
+					// gesture does not ALSO read as a plain RETURN below.
+					int fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN > 0;
 
-						SDL_SetWindowFullscreen(g_window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+					SDL_SetWindowFullscreen(g_window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
 
-						SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
-						GR_ResetDevice();
-					}
+					SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+					GR_ResetDevice();
 					break;
 				}
+				// A RETURN on its own falls through to DoDebugKeys below. It used to
+				// be swallowed here -- the bare `break` consumed RETURN even when Alt
+				// was NOT down -- which silently made the key invisible to every
+				// module's debug-key handler. That is the one key channel a module
+				// gets (g_dbg_gameDebugKeys), so the mp chat's "Enter sends" never
+				// fired. RETURN still reaches the pad (kc_start is read from the
+				// keyboard STATE in PsyX_pad.cpp, not from this event loop), so the
+				// menus and Alt+Enter are unaffected.
 
 				// lshift/right shift
 				if (nKey == SDL_SCANCODE_RSHIFT)

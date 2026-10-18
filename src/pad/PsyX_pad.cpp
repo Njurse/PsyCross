@@ -6,6 +6,8 @@
 #include "PsyX/PsyX_public.h"
 
 #include <string.h>
+#include <stdlib.h>	// getenv (JERICHO_PADPROBE)
+#include <limits.h>	// INT_MIN
 
 extern "C"
 {
@@ -28,6 +30,134 @@ const u_char*			g_sdlKeyboardState = NULL;
 
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+int		GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis);
+
+// JERICHO-HOOK: JERICHO_PADPROBE=1 — make the trigger half of the pad legible.
+//
+// L2/R2 are the ONLY mapped buttons this layer reads as SDL AXES (the "> 16384"
+// test in PsyX_Pad_UpdateGameControllerInput); every other button, R3 included,
+// is a real button. So a report of "the triggers do nothing, but look-back on R3
+// works" is a pad-layer symptom, not a camera one: paddCamera and TurnHead are
+// shared with the buttons. One `grep padprobe JERICHO.log` then says which half
+// is broken, because it prints the number the ini resolution produced for the
+// trigger, the RAW axis value, and the PSX button word the engine ends up with:
+//
+//   map  — 0x4000 means the AXIS flag is set, 0x8000 inverted, -1 bound to
+//          nothing. If this is NOT an axis the trigger can never fire: the read
+//          is a button read and no trigger is a button.
+//   axis — the value the "> 16384" gate sees. 0 while pressed = the pad puts the
+//          trigger somewhere this mapping does not look (or reports it centred,
+//          i.e. negative).
+//   bits — the PSX word (active LOW: L2 = 0x100, R2 = 0x200) that pad.c's MapPad
+//          turns into Pads[n].mapped, which is what paddCamera is sampled from.
+//
+// Prints on change only, so a run costs a handful of lines.
+static int g_padProbe = -1;
+
+static void PsyX_Pad_ProbeTriggers(int slot, SDL_GameController* cont, LPPADRAW pad)
+{
+	static int lastL2Map = INT_MIN, lastR2Map = INT_MIN;
+	static int lastL2Axis = INT_MIN, lastR2Axis = INT_MIN;
+	static int lastBits = INT_MIN;
+
+	int l2Map, r2Map, l2Axis = 0, r2Axis = 0, bits;
+
+	if (g_padProbe < 0)
+		g_padProbe = (getenv("JERICHO_PADPROBE") != NULL) ? 1 : 0;
+
+	if (g_padProbe == 0)
+		return;
+
+	l2Map = g_cfg_controllerMapping.gc_l2;
+	r2Map = g_cfg_controllerMapping.gc_r2;
+
+	if (cont != NULL)
+	{
+		l2Axis = GetControllerButtonState(cont, l2Map);
+		r2Axis = GetControllerButtonState(cont, r2Map);
+	}
+
+	bits = (~(int)(*(u_short*)pad->buttons)) & 0x300;
+
+	if (l2Map == lastL2Map && r2Map == lastR2Map && l2Axis == lastL2Axis &&
+		r2Axis == lastR2Axis && bits == lastBits)
+		return;
+
+	lastL2Map = l2Map;
+	lastR2Map = r2Map;
+	lastL2Axis = l2Axis;
+	lastR2Axis = r2Axis;
+	lastBits = bits;
+
+	eprintf("[padprobe] slot %d | L2 map=0x%04X axis=%d | R2 map=0x%04X axis=%d | psx bits=0x%03X (L2 %s, R2 %s)\n",
+		slot, l2Map, l2Axis, r2Map, r2Axis, bits,
+		(bits & 0x100) ? "DOWN" : "up", (bits & 0x200) ? "DOWN" : "up");
+}
+
+// JERICHO-HOOK: JERICHO_PADPROBE_FORCE=<button> — hold one PSX button down for
+// the whole run, so what a press DOES can be measured without a human on the
+// pad. It goes in at the pad layer on purpose: the bit then travels the real
+// path (pad word -> Pads[n].mapped -> the car's pad / paddCamera), which is what
+// makes it a usable check for "does the handbrake still cycle the player AI
+// mode?" and "does the look still respond when the bit is there?".
+//
+//   cross square triangle circle l1 r1 l2 r2 l3 r3 select start
+//
+// Test-only: nothing reads it unless the environment sets it.
+static void PsyX_Pad_ProbeForce(LPPADRAW pad)
+{
+	static int forced = -1;		// -1 unknown, else the PSX bit (active low)
+	static const struct { const char* name; int bit; } buttons[] =
+	{
+		{ "select",		0x1 },
+		{ "start",		0x8 },
+		{ "l3",			0x2 },
+		{ "r3",			0x4 },
+		{ "l2",			0x100 },
+		{ "r2",			0x200 },
+		{ "l1",			0x400 },
+		{ "r1",			0x800 },
+		{ "triangle",	0x1000 },
+		{ "circle",		0x2000 },
+		{ "cross",		0x4000 },
+		{ "square",		0x8000 },
+	};
+
+	if (forced < 0)
+	{
+		const char* name = getenv("JERICHO_PADPROBE_FORCE");
+		int i;
+
+		forced = 0;
+
+		if (name != NULL)
+		{
+			for (i = 0; i < (int)(sizeof(buttons) / sizeof(buttons[0])); i++)
+			{
+				/* own compare: _stricmp is MSVC's and this file has no
+				 * platform shim in front of it on the Linux build */
+				const char* a = name;
+				const char* b = buttons[i].name;
+
+				while (*a && *b && (*a | 0x20) == (*b | 0x20))
+				{
+					a++;
+					b++;
+				}
+
+				if (*a == 0 && *b == 0)
+				{
+					forced = buttons[i].bit;
+					eprintf("[padprobe] forcing PSX button '%s' (0x%03X) down for this run\n", name, forced);
+					break;
+				}
+			}
+		}
+	}
+
+	if (forced != 0)
+		*(u_short*)pad->buttons &= (u_short)~forced;
+}
 
 // Initializes SDL controllers
 int PsyX_Pad_InitSystem()
@@ -270,6 +400,10 @@ void PsyX_Pad_InternalPadUpdates()
 
 				*(u_short*)pad->buttons &= kbInputs;
 			}
+
+			// last, so the probe sees the word the engine will actually read
+			PsyX_Pad_ProbeForce(pad);
+			PsyX_Pad_ProbeTriggers(i, controller->gc, pad);
 		}
 	}
 
@@ -292,6 +426,21 @@ int GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis)
 	}
 
 	return SDL_GameControllerGetButton(cont, (SDL_GameControllerButton)buttonOrAxis) * 32767;
+}
+
+// L2/R2 are the ONLY mapped "buttons" the pad layer reads as AXES, and a pad
+// whose triggers sit on a CENTRED axis reports -32768..32767: there a plainly
+// pressed trigger is NEGATIVE, so the unsigned "> 16384" test never fires and
+// L2/R2 read as dead while every real button (R3 included) works. Read the
+// magnitude, so both conventions -- 0..32767 and centred -- fire the trigger.
+int GetTriggerState(SDL_GameController* cont, int buttonOrAxis)
+{
+	int value = GetControllerButtonState(cont, buttonOrAxis);
+
+	if ((buttonOrAxis & CONTROLLER_MAP_FLAG_AXIS) && value < 0)
+		value = -value;
+
+	return value;
 }
 
 void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
@@ -331,10 +480,10 @@ void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
 	if (GetControllerButtonState(cont, mapping.gc_r1) > 16384)//R1
 		ret &= ~0x800;
 
-	if (GetControllerButtonState(cont, mapping.gc_l2) > 16384)//L2
+	if (GetTriggerState(cont, mapping.gc_l2) > 16384)//L2
 		ret &= ~0x100;
 
-	if (GetControllerButtonState(cont, mapping.gc_r2) > 16384)//R2
+	if (GetTriggerState(cont, mapping.gc_r2) > 16384)//R2
 		ret &= ~0x200;
 
 	if (GetControllerButtonState(cont, mapping.gc_dpad_up) > 16384)//UP

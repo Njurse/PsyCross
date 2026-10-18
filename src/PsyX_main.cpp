@@ -335,6 +335,17 @@ int PsyX_LookupGameControllerMapping(const char* str, int default_value)
 		if (!_stricmp("NONE", str))
 			return SDL_CONTROLLER_BUTTON_INVALID;
 
+		/* The ini documents the triggers as "lefttrigger"/"righttrigger", but SDL
+		 * names those AXES "triggerleft"/"triggerright". Accept both spellings:
+		 * without this the lookup missed and quietly returned the built-in
+		 * default, which is harmless for the default value and silently ignored
+		 * an intended remap -- a failure that only ever shows up as "that button
+		 * does nothing". */
+		if (!_stricmp(axisStr, "lefttrigger"))
+			axisStr = "triggerleft";
+		else if (!_stricmp(axisStr, "righttrigger"))
+			axisStr = "triggerright";
+
 		// check buttons
 		for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
 		{

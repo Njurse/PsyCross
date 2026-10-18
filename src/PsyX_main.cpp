@@ -304,7 +304,9 @@ int PsyX_LookupKeyboardMapping(const char* str, int default_value)
 // Axes:
 //	leftx lefty
 //	rightx righty
-//	lefttrigger righttrigger
+//	triggerleft triggerright	(lefttrigger/righttrigger accepted as aliases:
+//				 the ini used to document it this way round, and the
+//				 lookup silently ignored the miss)
 //
 // NOTE: adding `-` before axis names makes it inverse, so `-leftx` inverse left stick X axis
 //

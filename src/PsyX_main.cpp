@@ -44,6 +44,10 @@ SDL_Window* g_window = NULL;
 int g_swapInterval = 1;
 int g_enableSwapInterval = 1;
 int g_skipSwapInterval = 0;
+
+/* JERICHO: a module owns the clock (an mp session), so the debug fast-forward is
+ * refused and any latched skip is released. See PsyX_SetFastForwardLocked. */
+static int g_ffLocked = 0;
 timerCtx_t g_vblTimer;
 
 int							g_cfg_swapInterval = 0;
@@ -197,6 +201,29 @@ static int PsyX_Sys_InitialiseCore()
 #ifdef __EMSCRIPTEN__
 	Util_InitHPCTimer(&g_vblTimer);
 #else
+
+	/* JERICHO: TEST-ONLY reproduction of a latched frame skip.
+	 *
+	 * The BACKSPACE debug fast-forward is cleared by the key-UP and by nothing
+	 * else, so a press whose key-up never arrives (focus stolen, a handler that
+	 * swallows it) leaves the sim running at render rate for the rest of the
+	 * process -- "the whole game is too fast" / "the handling model is broken".
+	 * That state could not previously be reproduced without a human on the
+	 * keyboard, which is why it was hard to see. This lever latches it at boot so
+	 * the symptom, and the lock that releases it, are both measurable:
+	 *
+	 *   JERICHO_FF_LATCH=1  ->  skip ON from the start (expect CLOCK_FAST in the
+	 *                           JERICHO_HANDLING_PROBE verdict, and a car that
+	 *                           accelerates absurdly fast)
+	 *   ... plus a live session (FastForwardLocked=1) -> PsyX_SetFastForwardLocked
+	 *                           releases it, and the verdict returns to RATE_OK.
+	 *
+	 * Nothing reads it in a normal run. */
+	if (getenv("JERICHO_FF_LATCH") != NULL)
+	{
+		g_skipSwapInterval = 1;
+		eprintf("[Psy-X] JERICHO_FF_LATCH: frame skip LATCHED ON (a BACKSPACE whose key-up never arrives)\n");
+	}
 
 	g_intrThread = SDL_CreateThread(intrThreadMain, "psyX_intr", NULL);
 
@@ -760,6 +787,19 @@ void PsyX_Sys_DoPollEvent()
 				case SDL_WINDOWEVENT_CLOSE:
 					PsyX_Exit();
 					break;
+				case SDL_WINDOWEVENT_FOCUS_LOST:
+					/* JERICHO: the BACKSPACE frame-skip is cleared by the key-UP, and a
+					 * key-up is exactly what does not arrive when the window loses
+					 * focus mid-press (alt-tab, a second window, an overlay). Left
+					 * alone the skip stays latched for the rest of the process and the
+					 * sim runs at render rate -- which is the "the whole game is too
+					 * fast" report. Release it here, where the key-up went missing. */
+					if (g_skipSwapInterval)
+					{
+						g_skipSwapInterval = 0;
+						eprintf("[Psy-X] focus lost: released the frame skip (its key-up will never arrive)\n");
+					}
+					break;
 				}
 				break;
 			case SDL_MOUSEMOTION:
@@ -959,10 +999,21 @@ void PsyX_Sys_DoDebugKeys(int nKey, char down)
 #if 1 //def _DEBUG
 	if (nKey == SDL_SCANCODE_BACKSPACE)
 	{
+		/* JERICHO: two things fast-forward the sim, and this is the second one (the
+		 * engine's `FastForward` in redriver2_psxpc.cpp is the first). It is gated by
+		 * the same lock, because turning off only the engine's key left THIS one live:
+		 * in a session BACKSPACE then did nothing visible to the engine and still ran
+		 * the sim at render rate, which reads exactly like "the whole game is too
+		 * fast" / "the handling model is broken". */
 		if (down)
-			g_skipSwapInterval = 1;
+		{
+			if (!g_ffLocked)
+				g_skipSwapInterval = 1;
+		}
 		else
+		{
 			g_skipSwapInterval = 0;
+		}
 	}
 #endif
 
@@ -1055,6 +1106,38 @@ uint PsyX_CalcFPS()
 void PsyX_SetSwapInterval(int interval)
 {
 	g_swapInterval = interval;
+}
+
+/* JERICHO: see PsyX_public.h. A skip that is ALREADY latched is the interesting
+ * case -- a BACKSPACE key-up that never arrived leaves it set forever -- so
+ * taking the lock releases it there and then rather than waiting for a key-up
+ * that will not come. */
+void PsyX_SetFastForwardLocked(int locked)
+{
+	g_ffLocked = locked ? 1 : 0;
+
+	if (g_ffLocked && g_skipSwapInterval)
+	{
+		g_skipSwapInterval = 0;
+		eprintf("[Psy-X] fast-forward locked: cleared a latched frame skip\n");
+	}
+}
+
+int PsyX_GetFrameSkip(void)
+{
+	return g_skipSwapInterval;
+}
+
+/* JERICHO: wall-clock milliseconds since PsyX started.
+ *
+ * The vblank counter is NOT usable as a clock while the frame skip is on -- the
+ * skip's whole mechanism is to advance that counter extra times (see
+ * PsyX_Sys_GetVBlankCount), so "steps per vblank" reads as SLOWER than the sim
+ * really is, exactly in the case a diagnostic needs to catch. This is the real
+ * timer, so a rate computed from it means what it says. */
+unsigned int PsyX_GetTicks(void)
+{
+	return (unsigned int)SDL_GetTicks();
 }
 
 void PsyX_EnableSwapInterval(int enable)

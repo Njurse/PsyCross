@@ -106,6 +106,31 @@ extern void PsyX_EnableSwapInterval(int enable);
 /* Changes swap interval interval interval */
 extern void PsyX_SetSwapInterval(int interval);
 
+/* JERICHO: is the frame-skip (BACKSPACE debug fast-forward) currently ON?
+ *
+ * This is the SECOND fast-forward path, separate from the engine's `FastForward`
+ * flag: while it is on, PsyX_Sys_GetVBlankCount() adds a vblank per call, so the
+ * game's 2-vblank/30 Hz gate is satisfied on nearly every frame and the sim runs
+ * at whatever rate the machine renders. It is set by BACKSPACE key-down and
+ * cleared by BACKSPACE key-UP and by nothing else, so a key-up that never
+ * arrives (focus loss, a handler that swallows it) leaves it latched -- which
+ * reads from the driver's seat as "the game is running way too fast" / "the
+ * handling model is broken". Exposed so a diagnostic can see it.
+ */
+extern int PsyX_GetFrameSkip(void);
+/* JERICHO: gate that debug fast-forward off (a session owns the clock).
+ *
+ * While locked, BACKSPACE no longer turns the skip on, and a skip that was
+ * already latched is cleared immediately -- which is the point: a client running
+ * the sim fast desyncs, and the lock is the module's way of saying it owns the
+ * rate. Mirrors the engine's FastForwardLocked (director.h). */
+extern void PsyX_SetFastForwardLocked(int locked);
+
+/* JERICHO: wall-clock milliseconds (SDL_GetTicks). Use THIS, not the vblank
+ * counter, to compute a sim rate: while the frame skip is on the vblank counter
+ * advances extra times per frame, so a rate derived from it under-reports. */
+extern unsigned int PsyX_GetTicks(void);
+
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif

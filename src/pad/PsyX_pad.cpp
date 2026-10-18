@@ -334,6 +334,53 @@ void PsyX_Pad_Event_ControllerRemoved(Sint32 deviceId)
 	}
 }
 
+// JERICHO-HOOK: JERICHO_PADPROBE_AXIS=<0..255> — hold the LEFT STICK X at a known
+// deflection for the whole run, and put the pad in ANALOG mode, so the car's
+// ANALOGUE steering path (use_analogue != 0 in ProcessCarPad, with its cubic
+// curve) can be measured without a human on a controller.
+//
+// This matters because the two steering paths are different code: the digital
+// path clamps cp->wheel_angle to 352, the analogue path COMPUTES the angle from
+// the stick and applies it unclamped. A stick value scaled wrong therefore shows
+// up as "the car steers far too fast" with nothing wrong in the physics -- and a
+// build with no controller plugged in never exercises it (a keyboard slot is
+// forced digital), so it has to be injectable to be tested at all.
+//
+// The value is the PSX analog byte: 128 = centred, 0 = full left, 255 = full
+// right. Test-only: nothing reads it unless the environment sets it.
+static void PsyX_Pad_ProbeAxis(LPPADRAW pad)
+{
+	static int forced = -2;		// -2 unknown, -1 off, else the analog byte
+
+	if (forced == -2)
+	{
+		const char* name = getenv("JERICHO_PADPROBE_AXIS");
+
+		forced = -1;
+
+		if (name != NULL)
+		{
+			int v = atoi(name);
+
+			if (v < 0)
+				v = 0;
+			if (v > 255)
+				v = 255;
+
+			forced = v;
+
+			eprintf("[padprobe] forcing left stick X to %d (%d from centre) in ANALOG mode for this run\n",
+				forced, forced - 128);
+		}
+	}
+
+	if (forced < 0)
+		return;
+
+	pad->analog[2] = (u_char)forced;
+	pad->id = 0x73;		// ANALOG: the game then takes the analogue steering path
+}
+
 void PsyX_Pad_InternalPadUpdates()
 {
 	PsyXController* controller;
@@ -402,6 +449,7 @@ void PsyX_Pad_InternalPadUpdates()
 			}
 
 			// last, so the probe sees the word the engine will actually read
+			PsyX_Pad_ProbeAxis(pad);
 			PsyX_Pad_ProbeForce(pad);
 			PsyX_Pad_ProbeTriggers(i, controller->gc, pad);
 		}

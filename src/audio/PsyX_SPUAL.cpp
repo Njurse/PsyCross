@@ -59,7 +59,12 @@ static const char* getALErrorString(int err)
 	}
 }
 
-#define SPU_REALMEMSIZE			(512 * 1024)
+// JERICHO: the hardware SPU is 512 KiB, but the emulator already allocates
+// SPU_MEMSIZE (2 MiB) for sample memory. Cross-city imports append whole car
+// sound banks after the level's own (and its special banks), which needs more
+// than the 512 KiB window; widen the authored/warning limit to 1 MiB, the same
+// conservative doubling used for VRAM. This does not affect a real PSX build.
+#define SPU_REALMEMSIZE			(1024 * 1024)
 #define SPU_MEMSIZE				(2048*1024)		// SPU_REALMEMSIZE
 
 typedef struct

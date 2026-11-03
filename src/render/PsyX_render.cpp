@@ -1334,17 +1334,18 @@ void GR_DestroyTexture(TextureID texture)
 #endif
 }
 
+static int GR_ClipVRAMRect(int* ax, int* ay, int* bx, int* by, int* w, int* h, const char* what);
+
 void GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b)
 {
 	vram_need_update = 1;
 
+	int ox = 0, oy = 0;
+
+	if (!GR_ClipVRAMRect(&x, &y, &ox, &oy, &w, &h, "ClearImage"))
+		return;
+
 	u_short* dst = vram + x + y * VRAM_WIDTH;
-
-	if (x + w > VRAM_WIDTH)
-		w = VRAM_WIDTH - x;
-
-	if (y + h > VRAM_HEIGHT)
-		h = VRAM_HEIGHT - y;
 
 	// clear VRAM region with given color
 	for (int i = 0; i < h; i++)

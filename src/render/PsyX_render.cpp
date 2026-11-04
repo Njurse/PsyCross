@@ -1334,17 +1334,18 @@ void GR_DestroyTexture(TextureID texture)
 #endif
 }
 
+static int GR_ClipVRAMRect(int* ax, int* ay, int* bx, int* by, int* w, int* h, const char* what);
+
 void GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b)
 {
 	vram_need_update = 1;
 
+	int ox = 0, oy = 0;
+
+	if (!GR_ClipVRAMRect(&x, &y, &ox, &oy, &w, &h, "ClearImage"))
+		return;
+
 	u_short* dst = vram + x + y * VRAM_WIDTH;
-
-	if (x + w > VRAM_WIDTH)
-		w = VRAM_WIDTH - x;
-
-	if (y + h > VRAM_HEIGHT)
-		h = VRAM_HEIGHT - y;
 
 	// clear VRAM region with given color
 	for (int i = 0; i < h; i++)
@@ -1825,6 +1826,30 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
 #endif
 }
 
+// Clip a w*h copy so the rect at (*ax,*ay) lies inside vram[], moving the paired
+// rect at (*bx,*by) by the same amount. A rect running off the buffer (a bad
+// RECT16 from a caller) used to read or write past vram[]. Returns 0 if nothing
+// is left to copy; logs the first clip only.
+static int GR_ClipVRAMRect(int* ax, int* ay, int* bx, int* by, int* w, int* h, const char* what)
+{
+	static int logged = 0;
+	int ow = *w, oh = *h, oax = *ax, oay = *ay;
+
+	if (*ax < 0) { *bx -= *ax; *w += *ax; *ax = 0; }
+	if (*ay < 0) { *by -= *ay; *h += *ay; *ay = 0; }
+	if (*ax + *w > VRAM_WIDTH) *w = VRAM_WIDTH - *ax;
+	if (*ay + *h > VRAM_HEIGHT) *h = VRAM_HEIGHT - *ay;
+
+	if ((*w != ow || *h != oh) && !logged)
+	{
+		logged = 1;
+		eprintwarn("%s: rect %d,%d %dx%d runs off the %dx%d VRAM - clipped (logged once)\n",
+			what, oax, oay, ow, oh, VRAM_WIDTH, VRAM_HEIGHT);
+	}
+
+	return *w > 0 && *h > 0;
+}
+
 void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int dst_y)
 {
 	vram_need_update = 1;
@@ -1837,7 +1862,13 @@ void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int
 
 		src = vram;
 		stride = VRAM_WIDTH;
+
+		if (!GR_ClipVRAMRect(&x, &y, &dst_x, &dst_y, &w, &h, "MoveImage source"))
+			return;
 	}
+
+	if (!GR_ClipVRAMRect(&dst_x, &dst_y, &x, &y, &w, &h, "LoadImage/MoveImage destination"))
+		return;
 
 	src += x + y * stride;
 
@@ -1852,11 +1883,19 @@ void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int
 
 void GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h)
 {
+	// rows/columns of the caller's buffer that fall outside vram[] are left as they are
+	int stride = dst_w, ox = 0, oy = 0;
+
+	if (!GR_ClipVRAMRect(&x, &y, &ox, &oy, &dst_w, &dst_h, "StoreImage source"))
+		return;
+
+	dst += ox + oy * stride;
+
 	unsigned short* src = vram + x + VRAM_WIDTH * y;
 
 	for (int i = 0; i < dst_h; i++) {
 		SDL_memcpy(dst, src, dst_w * sizeof(short));
-		dst += dst_w;
+		dst += stride;
 		src += VRAM_WIDTH;
 	}
 }

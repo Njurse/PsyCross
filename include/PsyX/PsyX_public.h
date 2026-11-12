@@ -108,16 +108,28 @@ extern void PsyX_SetSwapInterval(int interval);
 
 /* JERICHO: is the frame-skip (BACKSPACE debug fast-forward) currently ON?
  *
- * This is the SECOND fast-forward path, separate from the engine's `FastForward`
- * flag: while it is on, PsyX_Sys_GetVBlankCount() adds a vblank per call, so the
- * game's 2-vblank/30 Hz gate is satisfied on nearly every frame and the sim runs
- * at whatever rate the machine renders. It is set by BACKSPACE key-down and
- * cleared by BACKSPACE key-UP and by nothing else, so a key-up that never
- * arrives (focus loss, a handler that swallows it) leaves it latched -- which
- * reads from the driver's seat as "the game is running way too fast" / "the
- * handling model is broken". Exposed so a diagnostic can see it.
+ * This is the latch behind the BACKSPACE hold: set on key-down, cleared by the
+ * key-up, by a lost focus (which eats the key-up) and by
+ * PsyX_SetFastForwardLocked. While on, PsyX stops swapping with vsync.
+ *
+ * It no longer raises the sim rate by itself: the step gate runs on wall-clock
+ * milliseconds (FilterFrameTime), so a skip can only make the game DRAW less.
+ * The engine reads the same latch through PsyX_GetFastForwardHeld and re-asserts
+ * its own `FastForward` (7 steps per frame) while the key is down. Exposed so a
+ * diagnostic can see it; a latched skip (JERICHO_FF_LATCH) remains the test
+ * lever for a key-up that never arrives.
  */
 extern int PsyX_GetFrameSkip(void);
+
+/* JERICHO: is the BACKSPACE fast-forward key HELD?
+ *
+ * Same latch as PsyX_GetFrameSkip (key-down sets it; key-up, focus loss and
+ * PsyX_SetFastForwardLocked clear it), but read by the engine as "the fast-forward
+ * key is down". BACKSPACE is a hold: State_GameLoop re-asserts FastForward from
+ * this every gated frame, because DisplayOverlays clears FastForward at the end
+ * of a frame and a key-down alone would only buy that one frame. */
+extern int PsyX_GetFastForwardHeld(void);
+
 /* JERICHO: gate that debug fast-forward off (a session owns the clock).
  *
  * While locked, BACKSPACE no longer turns the skip on, and a skip that was

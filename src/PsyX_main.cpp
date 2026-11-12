@@ -1123,6 +1123,18 @@ void PsyX_SetFastForwardLocked(int locked)
 	}
 }
 
+/* JERICHO: is the BACKSPACE fast-forward key HELD?
+ *
+ * BACKSPACE is a hold, not a tap. This is the same latch as the frame skip:
+ * set on key-down, and cleared by the key-up, by a lost focus (which eats the
+ * key-up) and by PsyX_SetFastForwardLocked. It is the single source of truth
+ * for "the fast-forward key is down", so the engine can re-assert its own
+ * `FastForward` from it every gated frame. See State_GameLoop. */
+int PsyX_GetFastForwardHeld(void)
+{
+	return g_skipSwapInterval;
+}
+
 int PsyX_GetFrameSkip(void)
 {
 	return g_skipSwapInterval;
